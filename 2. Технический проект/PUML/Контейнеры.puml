@@ -1,0 +1,86 @@
+@startuml
+!include <C4/C4_Container>
+
+title Платформа для трейдинга — C4 Container (EDA)
+LAYOUT_LEFT_RIGHT()
+
+Person(trader, "Трейдер", "Web/Mobile")
+Person(analyst, "Аналитик", "Web")
+Person(broker, "Брокер", "Web")
+Person(admin, "Администратор", "Admin UI (Web)")
+
+System_Boundary(s1, "Платформа для трейдинга") {
+
+  Container(web, "Web-клиент", "React", "UI: котировки, ордера, портфель, аналитика")
+  Container(mobile, "Mobile-клиент", "Flutter/React Native", "UI: котировки, ордера, портфель")
+
+  Container(apigw, "API Gateway / BFF", "Go/Node.js", "Единая точка входа: маршрутизация, агрегация, rate-limit")
+  Container(auth, "Auth Service", "Go", "Пользователи, роли (RBAC), токены, MFA (интеграция)")
+  Container(marketSvc, "Market Data Service", "Go", "Фиды котировок, нормализация, стриминг в UI")
+  Container(orderSvc, "Order Service (OMS)", "Go", "Команды ордеров, статусы, доменные события (outbox)")
+  Container(brokerGw, "Broker Gateway", "Go", "Интеграция с брокером/биржей: submit/cancel + execution reports")
+  Container(portfolioSvc, "Portfolio Service", "Go", "Read-model портфеля/истории, PnL (подписка на сделки)")
+  Container(strategySvc, "Strategy Service", "Go", "Правила/триггеры, автоторговля")
+  Container(notifWorker, "Notification Worker", "Go", "Доставка уведомлений по событиям")
+
+  ContainerQueue(bus, "Event Bus", "Kafka/RabbitMQ", "Доменные события (OrderPlaced, TradeExecuted, PriceUpdated, ...)")
+  ContainerDb(userDb, "User DB", "PostgreSQL", "Пользователи/роли/сессии")
+  ContainerDb(tradeDb, "Trading DB", "PostgreSQL", "Ордера/сделки/outbox/audit")
+  ContainerDb(portDb, "Portfolio DB", "PostgreSQL", "Read-model портфеля + история сделок")
+  ContainerDb(quoteDb, "Quotes DB", "TimescaleDB/InfluxDB", "Тайм-серии котировок (опционально)")
+  Container(cache, "Redis", "Cache", "Горячие котировки, idempotency/inbox, rate-limit")
+}
+
+System_Ext(marketData, "Провайдер рыночных данных", "WebSocket/REST")
+System_Ext(exchange, "Брокер/Биржа", "FIX/REST")
+System_Ext(bank, "Банк/платёжная система", "API")
+System_Ext(kyc, "KYC/AML сервис", "API")
+System_Ext(idp, "Identity/MFA провайдер", "OAuth2/OIDC")
+System_Ext(notify, "Email/SMS/Push провайдер", "API/SMTP")
+
+Rel(trader, web, "Использует UI")
+Rel(trader, mobile, "Использует UI")
+Rel(analyst, web, "Использует UI (публикации)")
+Rel(broker, web, "Использует UI (отчёты)")
+Rel(admin, web, "Использует UI (админка)")
+
+Rel(web, apigw, "HTTPS: /api/* (GET /quotes, POST /orders, GET /portfolio)", "JSON")
+Rel(mobile, apigw, "HTTPS: /api/* (GET /quotes, POST /orders, GET /portfolio)", "JSON")
+
+Rel(apigw, auth, "POST /auth/login; GET /auth/validate; HasAccess(userId, permission)", "HTTP/gRPC")
+Rel(apigw, marketSvc, "GET /quotes/subscribe(symbol) ; WS /quotes/stream", "HTTP/WS")
+Rel(apigw, orderSvc, "POST /orders; POST /orders/{id}/cancel; GET /orders/{id}", "HTTP/gRPC")
+Rel(apigw, portfolioSvc, "GET /portfolio; GET /trades?range", "HTTP/gRPC")
+Rel(apigw, strategySvc, "POST /strategies; PATCH /strategies/{id}", "HTTP/gRPC")
+
+Rel(auth, userDb, "SQL: users/roles/sessions")
+Rel(auth, idp, "OIDC: authorize(), token(), refresh(); MFA", "HTTP")
+Rel(auth, kyc, "startKyc(userId), kycStatus(userId)", "HTTP")
+
+Rel(marketSvc, marketData, "WS/REST: subscribe(symbol)", "WS/REST")
+Rel(marketSvc, quoteDb, "SQL: writeQuoteTick()", "SQL")
+Rel(marketSvc, cache, "SET quote:{symbol}", "Redis")
+Rel(marketSvc, bus, "Publish PriceUpdated/CandleClosed", "Kafka/RabbitMQ")
+
+Rel(orderSvc, tradeDb, "SQL: orders/trades/outbox/audit")
+Rel(orderSvc, bus, "Publish OrderPlaced/OrderCanceled", "Kafka/RabbitMQ")
+
+Rel(brokerGw, bus, "Consume OrderPlaced/OrderCanceled", "Kafka/RabbitMQ")
+Rel(brokerGw, exchange, "submitOrder(), cancelOrder() → executionReport()", "FIX/REST")
+Rel(brokerGw, bus, "Publish ExecutionReportReceived", "Kafka/RabbitMQ")
+
+Rel(orderSvc, bus, "Consume ExecutionReportReceived", "Kafka/RabbitMQ")
+Rel(orderSvc, bus, "Publish TradeExecuted/OrderRejected", "Kafka/RabbitMQ")
+
+Rel(portfolioSvc, bus, "Consume TradeExecuted", "Kafka/RabbitMQ")
+Rel(portfolioSvc, portDb, "SQL: upsertPosition(); appendTrade()")
+
+Rel(strategySvc, bus, "Consume PriceUpdated/TradeExecuted; Publish StrategyTriggered/OrderCommand", "Kafka/RabbitMQ")
+Rel(strategySvc, orderSvc, "PlaceOrder(cmd) (sync fallback)", "HTTP/gRPC")
+
+Rel(portfolioSvc, bank, "createPayment(), paymentStatus()", "HTTP")
+
+Rel(notifWorker, bus, "Consume NotificationRequested", "Kafka/RabbitMQ")
+Rel(notifWorker, notify, "sendEmail()/sendSms()/sendPush()", "API/SMTP")
+
+@enduml

@@ -1,0 +1,121 @@
+@startuml
+!include <C4/C4_Component>
+
+title Order Service (OMS) — C4 Component (детализация ядра)
+LAYOUT_LEFT_RIGHT()
+
+System_Ext(bff, "API Gateway / BFF", "HTTPS", "Единая точка входа для Web/Mobile")
+System_Ext(authSvc, "Auth Service", "gRPC/HTTP", "RBAC/JWT/MFA")
+
+ContainerDb(tradeDb, "Trading DB", "PostgreSQL", "orders, fills, audit, outbox")
+Container(cache, "Redis", "Key-Value", "idempotency/inbox keys")
+ContainerQueue(bus, "Event Bus", "Kafka/RabbitMQ", "OrderPlaced, OrderCanceled, ExecutionReportReceived, ...")
+
+Container_Boundary(oms, "Order Service (OMS)", "Go", "Команды ордеров + статусы. Пишет события в outbox") {
+
+  Component(api, "OrdersController", "HTTP/gRPC", "POST /orders; POST /orders/{id}/cancel; GET /orders/{id}")
+
+  Component(authz, "AuthZClient", "Go", "bool HasAccess(userId, permission)")
+  Component(idem, "IdempotencyGuard", "Go", "bool IsProcessed(cmdId); MarkProcessed(cmdId)")
+
+  Component(place, "PlaceOrderHandler", "Application", "PlaceOrder(cmd) → OrderPlaced")
+  Component(cancel, "CancelOrderHandler", "Application", "CancelOrder(cmd) → OrderCanceled")
+  Component(execHandler, "ExecutionReportHandler", "Application", "ApplyReport(report) → TradeExecuted/OrderRejected")
+
+  Component(risk, "RiskPolicy", "Domain Service", "ValidateOrder(cmd): лимиты, доступность инструмента")
+  Component(orderAgg, "OrderAggregate", "Domain", "Инварианты, переходы статусов, расчёт итогового состояния")
+
+  Component(orderRepo, "OrderRepository", "Port (interface)", "Save(), Get(), UpdateStatus()")
+  Component(outboxRepo, "OutboxRepository", "Port (interface)", "Append(event), FetchPending(), MarkPublished()")
+
+  Component(pgOrders, "PostgresOrderRepository", "Adapter", "SQL реализация OrderRepository")
+  Component(pgOutbox, "PostgresOutboxRepository", "Adapter", "SQL реализация OutboxRepository (таблица outbox)")
+
+  Component(outboxPub, "OutboxPublisher", "Worker", "publishPending() → Event Bus (at-least-once)")
+}
+
+Rel(bff, api, "HTTP: POST /orders\nPOST /orders/{id}/cancel\nGET /orders/{id}", "JSON/gRPC")
+Rel(api, authz, "HasAccess(userId, permission)")
+Rel(authz, authSvc, "HasAccess(userId, permission)", "gRPC")
+Rel(api, idem, "IsProcessed(cmdId)\nMarkProcessed(cmdId)")
+Rel(idem, cache, "GET/SET cmdId", "Redis")
+
+Rel(api, place, "PlaceOrder(cmd)")
+Rel(api, cancel, "CancelOrder(cmd)")
+
+Rel(place, risk, "ValidateOrder(cmd)")
+Rel(place, orderAgg, "Create() / ChangeStatus(NEW)")
+Rel(cancel, orderAgg, "Cancel()")
+
+Rel(place, orderRepo, "Save(order)")
+Rel(cancel, orderRepo, "UpdateStatus(orderId, CANCELED)")
+
+Rel(place, outboxRepo, "Append(OrderPlaced)")
+Rel(cancel, outboxRepo, "Append(OrderCanceled)")
+
+Rel(bus, execHandler, "Consume ExecutionReportReceived", "Kafka/RabbitMQ")
+Rel(execHandler, orderAgg, "ApplyExecutionReport(report)")
+Rel(execHandler, orderRepo, "UpdateStatus(...)\nAppendFill(...)")
+Rel(execHandler, outboxRepo, "Append(TradeExecuted/OrderRejected)")
+
+Rel(orderRepo, pgOrders, "calls", "in-process")
+Rel(outboxRepo, pgOutbox, "calls", "in-process")
+
+Rel(pgOrders, tradeDb, "SQL (orders/fills/audit)")
+Rel(pgOutbox, tradeDb, "SQL (outbox)")
+
+Rel(outboxPub, outboxRepo, "FetchPending(); MarkPublished()")
+Rel(outboxPub, bus, "Publish Order*/Trade* events", "Kafka/RabbitMQ")
+
+@enduml
+
+@startuml
+title Order Service (OMS) — Code / Packages (упрощённо)
+skinparam packageStyle rectangle
+
+package "cmd/order-service" as cmd
+
+package "internal" as internal {
+  package "api" as api {
+    [OrdersController]
+    [DTO / Validation]
+  }
+
+  package "application" as app {
+    [PlaceOrderHandler]
+    [CancelOrderHandler]
+    [ExecutionReportHandler]
+    [Ports: OrderRepository, OutboxRepository]
+  }
+
+  package "domain" as domain {
+    [OrderAggregate]
+    [RiskPolicy]
+    [Domain Events]
+  }
+
+  package "infrastructure" as infra {
+    package "postgres" as pg {
+      [PostgresOrderRepository]
+      [PostgresOutboxRepository]
+    }
+    package "messaging" as msg {
+      [OutboxPublisher]
+      [Bus Consumer]
+    }
+    package "redis" as red {
+      [IdempotencyStore]
+    }
+  }
+}
+
+api --> app : calls use-cases
+app --> domain : invokes domain logic
+app --> infra : uses adapters via ports
+pg --> app : implements ports
+msg --> app : publishes/consumes events
+red --> app : idempotency keys
+
+@enduml
+```
+

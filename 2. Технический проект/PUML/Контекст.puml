@@ -1,0 +1,43 @@
+@startuml
+!include <C4/C4_Context>
+
+title Платформа для трейдинга — C4 Context
+LAYOUT_LEFT_RIGHT()
+
+Person(trader, "Трейдер", "Котировки, ордера, портфель")
+Person(analyst, "Аналитик", "Обзоры и рекомендации")
+Person(broker, "Брокер", "Исполнение/подтверждение сделок")
+Person(admin, "Администратор", "Мониторинг, аудит, безопасность")
+
+System(platform, "Платформа для трейдинга", "Realtime-котировки, торговля, портфель, стратегии, аналитика, коммуникации")
+
+System_Ext(marketData, "Провайдер рыночных данных", "WS/REST: subscribe(symbol) → QuoteUpdated")
+System_Ext(exchange, "Брокер/Биржа", "FIX/REST: submitOrder(), cancelOrder() → executionReport()")
+System_Ext(bank, "Банк/платёжная система", "API: createPayment(), paymentStatus()")
+System_Ext(kyc, "KYC/AML сервис", "API: startKyc(userId), kycStatus(userId)")
+System_Ext(idp, "Identity/MFA провайдер", "OIDC/OAuth2: authorize(), token(), mfaChallenge()")
+System_Ext(notify, "Email/SMS/Push провайдер", "API/SMTP: sendEmail(), sendSms(), sendPush()")
+System_Ext(waf, "WAF/CDN", "HTTPS: protect(), rateLimit(), cacheStatic()")
+System_Ext(obs, "Observability (managed)", "OTLP/HTTP: pushMetrics(), pushLogs(), pushTraces()")
+
+Rel(trader, platform, "Web/Mobile: subscribeQuotes(), placeOrder(), cancelOrder(), viewPortfolio()")
+Rel(analyst, platform, "Web: publishReview(), publishRecommendation(), viewAnalytics()")
+Rel(broker, platform, "Web: viewReports(); External: provides executionReport()")
+Rel(admin, platform, "Admin UI: manageRoles(), auditSearch(), viewMetrics()")
+
+Rel(platform, marketData, "WS/REST: subscribe(symbol) → QuoteUpdated")
+Rel(platform, exchange, "submitOrder(), cancelOrder(); receive executionReport()")
+Rel(platform, bank, "createPayment(), paymentStatus()")
+Rel(platform, kyc, "startKyc(userId), kycStatus(userId)")
+Rel(platform, idp, "OIDC/OAuth2: authorize(), token(), refresh(); MFA")
+Rel(platform, notify, "sendEmail()/sendSms()/sendPush()")
+Rel(platform, obs, "pushMetrics()/pushLogs()/pushTraces()")
+
+' Периметр (логический): трафик пользователей проходит через защиту
+Rel(trader, waf, "HTTPS")
+Rel(analyst, waf, "HTTPS")
+Rel(broker, waf, "HTTPS")
+Rel(admin, waf, "HTTPS")
+Rel(waf, platform, "HTTPS: proxy/edge")
+
+@enduml
